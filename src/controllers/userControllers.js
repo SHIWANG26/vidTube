@@ -3,7 +3,8 @@ import {User} from "../models/user.models.js"
 import {ApiResponse} from "../utils/ApiResponse.js"
 import {asyncHandler} from "../utils/asyncHandler.js"
 import {ApiError} from "../utils/ApiError.js"
-
+import { JsonWebTokenError } from "jsonwebtoken"
+import jet from "jsonwebtoken"
 
 const generateAccessAndRefreshToken = async (userId) => {
     try {
@@ -120,12 +121,108 @@ const loginUser = asyncHandler(async(req,res) => {
     const {email, username, password} = req.body;
     //validation
     if (!email) {
-        throw new Apirror(400, "Email is required");
-        
+        throw new ApiError(400, "Email is required");
+    }
+    const user = await User.findOne({
+        $or: [{username}, {email}]
+    })
+    if (!user) {
+        throw new ApiError(404, "User not found");
+    }
+    //validate password
+    const isPasswordValid = await user.isPasswordCorrect(password)
+    if (!isPasswordValid) {
+        throw new ApiError(401, "Invalid credentials");
+    }
+
+    //we will take help from helper functions to generate access tokens
+    const {accessToken, refreshToken} = await generateAccessAndRefreshToken(user._id)
+
+    //We will firebase a user from dB
+    const loggedInUser = await user.findById(user._id)
+                            .select("-password -refreshToken");
+    if (!loggedInUser) {
+        throw new ApiError(404, "User not found");
+    }
+    const options = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV ===  "production",
+    }
+    return res
+        .status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", refreshToken, options)
+        // .json(new ApiResponse(200, loggedInUser, "User loggedIn successfully"))
+        //mobile app do not use cookie so we will use another format
+        .json(new ApiResponse(
+            200,
+            {user, loggedInUser, accessToken, refreshToken},
+            "User loggedIn successfully"
+        ))
+})
+//logout user
+const logOutUser = asyncHandler(async(req, res) => {
+    await User.findByIdAndUpdate(
+        req.user._id,
+        {
+            //set new field refreshToken to null
+            $set: {
+                refreshToken: undefined
+            }
+        },
+        {new: true}
+    )
+    const options = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+    }
+    return res
+        .status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        .json(new ApiResponse(200, {}, "User logged out successfully"))
+
+})
+//how to generate refreshAccessToken
+const refreshAccessToken = asyncHandler(async(req, res) => {
+    const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken
+    if (!incomingRefreshToken) {
+        throw new ApiError(401, "Refresh token is missing, please login again")
+    }
+    try {
+        const decodedToken = jwt.verify(
+            incomingRefreshToken,
+            process.env.REFRESH_TOKEN_SECRET
+        )
+        const user = await User.findById(decodedToken?._id)
+        if (!user) {
+            throw new ApiError(401, "Invalid refresh token, please login again")
+        }
+        if(incomingRefreshToken !== user?.refreshToken) {
+            throw new ApiError(401, "Invalid refresh token, please login again")
+        }
+        const options = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+        }
+        const {accessToken, refreshToken: newRefreshToken} = await generateAccessAndRefreshToken(user._id)
+        return res
+            .status(200)
+            .cookie("accessToken", accessToken, options)
+            .cookie("refreshToken", newRefreshToken, options)
+            .json(new ApiResponse(
+                200, 
+                {
+                    accessToken, refreshToken: newRefreshToken
+                }, 
+                "Access token refreshed successfully"));
+    } catch (error) {
+        throw new ApiError(500, "Something went wrong while refreshing access token")
     }
 })
 
+
 export
 {
-    registerUser
+    registerUser, loginUser, refreshAccessToken, logOutUser
 }
