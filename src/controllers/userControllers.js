@@ -4,7 +4,8 @@ import {ApiResponse} from "../utils/ApiResponse.js"
 import {asyncHandler} from "../utils/asyncHandler.js"
 import {ApiError} from "../utils/ApiError.js"
 import { JsonWebTokenError } from "jsonwebtoken"
-import jet from "jsonwebtoken"
+import jwt from "jsonwebtoken"
+import mongoose from "mongoose"
 
 const generateAccessAndRefreshToken = async (userId) => {
     try {
@@ -46,6 +47,7 @@ const registerUser = asyncHandler(async(req, res) => {
     }
     //how to handle images
     console.warn(req.files)
+    //inject files in request object using multer
     const avatarLocalPath = req.files?.avatar?.[0]?.path
     const coverLocalPath = req.files?.coverImage?.[0]?.path
 
@@ -220,9 +222,230 @@ const refreshAccessToken = asyncHandler(async(req, res) => {
         throw new ApiError(500, "Something went wrong while refreshing access token")
     }
 })
+const changeCurrentPassword = asyncHandler(async(req, res) => {
+    const {oldPassword, newPassword} = req.body
+    const user = await User.findById(req.user?._id)
 
+    const isPasswordValid = await user.isPasswordCorrect(oldPassword)
+    if (!isPasswordValid) {
+        throw new ApiError(401, "Old password is incorrect")
+    }
+    user.password = newPassword
+
+    //save the user
+    await user.save({ValidateBeforeSave: false})
+
+    return res
+        .status(200)
+        .json(new ApiResponse(200, {}, "Password changed successfully"))
+})
+const getCurrentUser = asyncHandler(async(req, res) => {
+    //user is already present in req.user
+    return res
+        .status(200)
+        .json(new ApiResponse(200, req.user, "User fetched successfully"))
+})
+const updateAccountDetails = asyncHandler(async(req, res) => {
+    //what fields we need to update
+    const {fullName, email} = req.body
+    
+    //validation
+    if (!fullName || !email) {
+        throw new ApiError(400, "Full name and email are required")
+    }
+    const user = await User.findByIdAndUpdate(
+        req.user._id,
+        {
+            $set: {
+                fullName,
+                email: email
+            }
+        },
+        {new: true}
+    ).select("-password -refreshToken")
+    //send response
+    return res
+        .status(200)
+        .json(new ApiResponse(200, user, "User accounts details updated successfully"))
+})
+const updateUserAvatar = asyncHandler(async(req, res) => {
+    //access the file from request object
+    const avatarLocalPath = req.file?.path
+    if (!avatarLocalPath) {
+        throw new ApiError(400, "Avatar file is missing")
+    }
+    //upload the image on cloudinary
+    const avatar = await uploadOnCloudinary(avatarLocalPath)
+    if (!avatar.url) {
+        throw new ApiError(500, "Failed to upload avatar")
+    }
+    const user  = await User.findByIdAndUpdate(
+        req.user._id,
+        {
+            $set: {
+                avatar: avatar.url
+            }
+        },
+        {new: true}
+    ).select("-password -refreshToken")
+
+    return res
+        .status(200
+        .json(new ApiResponse(200, user, "User avatar updated successfully"))
+        )
+})
+const updateUserCoverImage = asyncHandler(async(req, res) => {
+    //access the file from request object(coverImage)
+    const coverImageLocalPath = req.file?.path
+    if (!coverImageLocalPath) {
+        throw new ApiError(400, "Cover image file is missing")
+    }
+    //upload the image on cloudinary
+    const coverImage = await uploadOnCloudinary(coverImageLocalPath)
+    //validate the image
+    if (!coverImage) {
+        throw new ApiError(500, "Failed to upload cover image")
+    }
+    const user = await User.findByIdAndUpdate(
+        req._id,
+        {
+            $set: {
+                coverImage: coverImage.url
+            }
+        },
+        {new: true}
+    ).select("-password -refreshToken")
+    //send response
+    return res
+        .status(200)
+        .json(new ApiResponse(200, user, "User cover image updated successfully"))
+})
+
+//now we will write two more controllers which will use aggregation pipeline to get the user details and followers and following
+const getUserChannelProfile = asyncHandler(async(req, res) => {
+    const {username} = req.params
+    if (!username.trim()){
+        throw new ApiError(400, "Username is required")
+    }
+    //now we will use aggregation pipeline to get the user details and followers and following. in this we will pass array and in that we will pass the username and then we will pass multiple objects
+    const channel = await User.aggregate(
+        [
+            {
+                $match: {
+                    username: username?.toLowerCase()
+                }
+            },
+            {
+                $lookup: {
+                    from: "subscriptions",
+                    localField: "_id",
+                    foreignField: "channel",
+                    as: "subscribers"
+                },
+                $lookup: {
+                    from : "subscriptions",
+                    localField: "_id",
+                    foreignField: "subscriber",
+                    as: "subscribedTo"
+                },
+                $addFields: {
+                    subscribersCount: {//we use dollar to named variables inside the "addFields"
+                        $size: "$subscribers"
+                    },
+                    channelsSubscribedToCount: {
+                        $size: "$subscribedTo"
+                    },
+                    isSubscribed: {
+                        $cond: {
+                            if: {$in: [req.user?._id, "$subscribers.subscriber"]},
+                            then: true,
+                            else: false
+                        }
+                    }
+                },
+                //project is used to select the fields we want to return
+                $project: {
+                    //we use 0 to exclude the fields we dont want to return
+                    fullName: 1,
+                    username: 1,
+                    avatar: 1,
+                    coverImage: 1,
+                    subscribersCount: 1,
+                    channelsSubscribedToCount: 1,
+                    isSubscribed: 1,
+                    email: 1,
+                }
+                
+            }
+        ]
+    )
+    //after this an array of objects will be returned and we will get the first object from it
+    if (!channel.length) {
+        throw new ApiError(404, "Channel not found")
+    }
+    return res
+        .status(200)
+        .json(new ApiResponse(200, channel[0], "Channel profile fetched successfully"))
+})
+const getWatchHistory = asyncHandler(async(req, res) => {
+    //we will use aggregation pipeline to get the user details and followers and following. in this we will pass array and in that we will pass the username and then we will pass multiple objects
+    const user = await User.aggregate(
+        [
+            {
+                $match: {
+                    //mongoose.Types.ObjectId is used to convert the string to object id
+                    //new is not used since mongoose automatically creates a new object id
+                    _id: mongoose.Types.ObjectId(req.user?._id)
+                },
+                $lookup: {
+                    from: "videos",
+                    localField: "watchHistory",
+                    foreignField: "_id",
+                    as: "watchHistory",
+                    pipeline:[
+                        {
+                            $lookup: {
+                                from: "users",
+                                localField: "owner",
+                                foreignField: "_id",
+                                as: "owner",
+                                pipeline: [
+                                    {
+                                        $project: {
+                                            fullName: 1,
+                                            username: 1,
+                                            avatar: 1,
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            $addFields: {
+                                owner: {
+                                    $first: "$owner"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    )
+    return res
+        .status(200)
+        .json(new ApiResponse(200, user[0]?.watchHistory, "Watch history fetched successfully"))
+})
 
 export
 {
-    registerUser, loginUser, refreshAccessToken, logOutUser
+    registerUser, 
+    loginUser, 
+    refreshAccessToken, 
+    logOutUser, 
+    changeCurrentPassword, 
+    getCurrentUser, 
+    updateAccountDetails, 
+    updateUserAvatar, 
+    updateUserCoverImage
 }
