@@ -16,4 +16,6 @@ class ApiError extends Error{
     }
 }
 
+//export the ApiError class
+// This class can be used to create custom error objects with a status code, message, and optional errors array.
 export {ApiError}
