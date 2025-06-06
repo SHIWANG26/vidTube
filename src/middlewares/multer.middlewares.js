@@ -1,7 +1,7 @@
 import multer from "multer";
 import path from "path";
 
-
+// This middleware is used to handle file uploads in a Node.js application using multer.
 const storage = multer.diskStorage({  //cb = callback
     destination: function (req, file, cb) {
       cb(null, './public/temp')

@@ -3,6 +3,7 @@ import { asyncHandler } from "../utils/asyncHandler.js"
 import jwt from "jsonwebtoken"
 import { User } from "../models/user.model.js"
 
+// This middleware function verifies the JWT token from the request cookies or headers.
 export const verifyJWT = asyncHandler(async(req, res, next) => {
     try {
         const token = req.cookies?.accessToken || req.header("Authorization")?.replace("Bearer ", "") 

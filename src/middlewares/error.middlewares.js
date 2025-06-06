@@ -18,6 +18,7 @@ const errorHandler = (err,req, res, next) => {
     return res.status(error.statusCode).json(response)
 }
 
+//it is used to handle errors in the application
 export {
     errorHandler
 }
