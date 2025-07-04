@@ -1,5 +1,6 @@
 import mongoose, {Schema} from "mongoose"
 
+//It helps to create model for playlist
 const playlistSchema = new Schema({
     name: {
         type:String,
